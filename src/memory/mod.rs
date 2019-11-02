@@ -14,7 +14,11 @@ use Error;
 #[path = "mmap_bytebuf.rs"]
 mod bytebuf;
 
-#[cfg(any(not(unix), feature = "vec_memory"))]
+#[cfg(all(windows, not(feature = "vec_memory")))]
+#[path = "virtualalloc_bytebuf.rs"]
+mod bytebuf;
+
+#[cfg(any(all(not(windows), not(unix)), feature = "vec_memory"))]
 #[path = "vec_bytebuf.rs"]
 mod bytebuf;
 

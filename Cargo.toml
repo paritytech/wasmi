@@ -18,6 +18,7 @@ libm = { version = "0.1.2", optional = true }
 num-rational = "0.2.2"
 num-traits = "0.2.8"
 libc = "0.2.58"
+winapi = "0.3.8"
 
 [dev-dependencies]
 assert_matches = "1.1"
@@ -25,7 +26,10 @@ rand = "0.4.2"
 wabt = "0.9"
 
 [features]
-default = ["std"]
+default = [
+    "std",
+    "winapi/memoryapi"
+]
 # Disable for no_std support
 std = [
     "parity-wasm/std",
@@ -41,7 +45,7 @@ core = [
     "libm"
 ]
 # Enforce using the linear memory implementation based on `Vec` instead of
-# mmap on unix systems.
+# `mmap` on unix systems and `VirtualAlloc` on Windows systems.
 #
 # Useful for tests and if you need to minimize unsafe usage at the cost of performance on some
 # workloads.

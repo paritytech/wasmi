@@ -93,7 +93,6 @@
 //!     );
 //! }
 //! ```
-
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -111,6 +110,8 @@ extern crate core;
 extern crate assert_matches;
 #[cfg(test)]
 extern crate wabt;
+
+extern crate winapi;
 
 extern crate memory_units as memory_units_crate;
 extern crate parity_wasm;
