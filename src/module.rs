@@ -13,7 +13,7 @@ use alloc::collections::BTreeMap;
 use core::cell::Ref;
 use func::{FuncBody, FuncInstance, FuncRef};
 use global::{GlobalInstance, GlobalRef};
-use host::Externals;
+use host::{Externals,AsyncExternals};
 use imports::ImportResolver;
 use memory::MemoryRef;
 use memory_units::Pages;
@@ -23,6 +23,7 @@ use table::TableRef;
 use types::{GlobalDescriptor, MemoryDescriptor, TableDescriptor};
 use validation::{DEFAULT_MEMORY_INDEX, DEFAULT_TABLE_INDEX};
 use {Error, MemoryInstance, Module, RuntimeValue, Signature, TableInstance};
+use futures::{Future, future};
 
 /// Reference to a [`ModuleInstance`].
 ///
@@ -639,6 +640,42 @@ impl ModuleInstance {
         FuncInstance::invoke(&func_instance, args, externals).map_err(|t| Error::Trap(t))
     }
 
+    /// Invoke exported function by a name asynchronously.
+    ///
+    /// This function finds exported function by a name, and calls it with provided arguments and
+    /// external state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if:
+    ///
+    /// - there are no export with a given name or this export is not a function,
+    /// - given arguments doesn't match to function signature,
+    /// - trap occurred at the execution time,
+    ///
+    pub fn invoke_export_async<'a,E>(
+        &self,
+        func_name: &str,
+        args: Vec<RuntimeValue>,
+        externals: Rc<E>,
+    ) -> impl Future<Item=Option<RuntimeValue>,Error= Error>
+    where E:AsyncExternals +'static 
+    {
+        let func_instance = self.func_by_name(func_name);
+
+        match func_instance{
+            Ok(func)=>{
+                future::Either::A(FuncInstance::invoke_async(func, args, externals).from_err())
+
+            },
+            Err(err)=>{
+                future::Either::B(future::err(err))
+            }
+        }
+
+        
+    }
+
     /// Invoke exported function by a name using recycled stacks.
     ///
     /// # Errors
@@ -730,6 +767,23 @@ impl<'a> NotStartedModuleRef<'a> {
                 .func_by_index(start_fn_idx)
                 .expect("Due to validation start function should exists");
             FuncInstance::invoke(&start_func, &[], state)?;
+        }
+        Ok(self.instance)
+    }
+
+    /// Executes `start` function (if any) for an asynchronous module and returns fully instantiated module.
+    /// Blocks until start function has returned
+    /// 
+    /// # Errors
+    ///
+    /// Returns `Err` if start function traps.
+    pub fn run_start_async_block<E:AsyncExternals +'a>(self, state: &Rc<E>) -> Result<ModuleRef, Trap> {
+        if let Some(start_fn_idx) = self.loaded_module.module().start_section() {
+            let start_func = self
+                .instance
+                .func_by_index(start_fn_idx)
+                .expect("Due to validation start function should exists");
+            FuncInstance::invoke_async(start_func, Vec::new(), Rc::clone(state)).wait()?;
         }
         Ok(self.instance)
     }

@@ -117,6 +117,8 @@ extern crate parity_wasm;
 
 extern crate wasmi_validation as validation;
 
+extern crate futures;
+
 use alloc::{
     boxed::Box,
     string::{String, ToString},
@@ -402,7 +404,7 @@ mod tests;
 
 pub use self::func::{FuncInstance, FuncInvocation, FuncRef, ResumableError};
 pub use self::global::{GlobalInstance, GlobalRef};
-pub use self::host::{Externals, HostError, NopExternals, RuntimeArgs};
+pub use self::host::{Externals, AsyncExternals, HostError, NopExternals, RuntimeArgs};
 pub use self::imports::{ImportResolver, ImportsBuilder, ModuleImportResolver};
 pub use self::memory::{MemoryInstance, MemoryRef, LINEAR_MEMORY_PAGE_SIZE};
 pub use self::module::{ExternVal, ModuleInstance, ModuleRef, NotStartedModuleRef};

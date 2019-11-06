@@ -18,11 +18,13 @@ libm = { version = "0.1.2", optional = true }
 num-rational = "0.2.2"
 num-traits = "0.2.8"
 libc = "0.2.58"
+futures = "0.1.29"
 
 [dev-dependencies]
 assert_matches = "1.1"
 rand = "0.4.2"
 wabt = "0.9"
+tokio = "0.1.22"
 
 [features]
 default = ["std"]

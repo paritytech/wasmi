@@ -3,7 +3,7 @@ use core::fmt;
 use core::ops;
 use core::{u32, usize};
 use func::{FuncInstance, FuncInstanceInternal, FuncRef};
-use host::Externals;
+use host::{AsyncExternals, Externals};
 use isa;
 use memory::MemoryRef;
 use memory_units::Pages;
@@ -16,7 +16,9 @@ use value::{
     TryTruncateInto, WrapInto,
 };
 use {Signature, Trap, TrapKind, ValueType};
-
+use futures::{Future, future};
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Maximum number of bytes on the value stack.
 pub const DEFAULT_VALUE_STACK_LIMIT: usize = 1024 * 1024;
 
@@ -224,6 +226,18 @@ impl Interpreter {
         Ok(opt_return_value)
     }
 
+    pub fn start_execution_async<'a,E:AsyncExternals +'a>(
+        mut self,
+        externals: Rc<E>,
+    ) -> Box<dyn Future<Item = Option<RuntimeValue>, Error = Trap>+'a> 
+    {
+        // Ensure that the VM has not been executed. This is checked in `FuncInvocation::start_execution`.
+        assert!(self.state == InterpreterState::Initialized);
+
+        self.state = InterpreterState::Started;
+        Box::new(self.run_interpreter_loop_async(externals))
+    }
+
     pub fn resume_execution<'a, E: Externals + 'a>(
         &mut self,
         return_val: Option<RuntimeValue>,
@@ -369,6 +383,118 @@ impl Interpreter {
         Ok(RunResult::Return)
     }
 
+
+    fn run_interpreter_loop_async<'a,E:AsyncExternals +'a>(
+        self,
+        externals: Rc<E>,
+    ) -> Box<dyn Future<Item = Option<RuntimeValue>, Error = Trap> +'a>   
+    {
+        //return loop?
+        Box::new(
+            future::loop_fn(Rc::new(RefCell::new(self)),move |rs| {
+                let mut function_context = rs.borrow_mut().call_stack.pop().expect(
+                    "on loop entry - not empty; on loop continue - checking for emptiness; qed",
+                );
+                let function_ref = function_context.function.clone();
+                let function_body = function_ref
+				.body()
+				.expect(
+					"Host functions checked in function_return below; Internal functions always have a body; qed"
+				);
+
+                if !function_context.is_initialized() {
+                    // Initialize stack frame for the function call.
+                    if let Err(err)= function_context
+                        .initialize(&function_body.locals, &mut rs.borrow_mut().value_stack){
+                            return future::Either::A(future::err(err.into()))
+                        }
+                        
+                }
+
+                let function_return = match rs.borrow_mut()
+                    .do_run_function(&mut function_context, &function_body.code)
+                    .map_err(Trap::new){
+                        Ok(f)=>f,
+                        Err(err)=>{
+                            return future::Either::A(future::err(err.into()))
+                        }
+                    };
+                match function_return {
+                    RunResult::Return => {
+                        if rs.borrow().call_stack.is_empty() {
+                            // This was the last frame in the call stack. This means we
+                            // are done executing.
+                            let mut r=rs.borrow_mut();
+                            let opt_return_value = r
+                                .return_type
+                                .map(move |vt| r.value_stack.pop().with_type(vt));
+                            assert!(rs.borrow().value_stack.len() == 0);
+                            return future::Either::A(future::ok(future::Loop::Break(opt_return_value)))
+                        }
+                        return future::Either::A(future::ok(future::Loop::Continue(Rc::clone(&rs))));
+                    }
+                    RunResult::NestedCall(nested_func) => {
+                        if rs.borrow().call_stack.is_full() {
+                            return future::Either::A(future::err(TrapKind::StackOverflow.into()));
+                        }
+                        match *nested_func.as_internal() {
+                            FuncInstanceInternal::Internal { .. } => {
+                                let nested_context = FunctionContext::new(nested_func.clone());
+                                rs.borrow_mut().call_stack.push(function_context);
+                                rs.borrow_mut().call_stack.push(nested_context);
+                                return future::Either::A(future::ok(future::Loop::Continue(Rc::clone(&rs))));
+                            }
+                            FuncInstanceInternal::Host { ref signature, .. } => {
+                                let args = prepare_function_args(signature, &mut rs.borrow_mut().value_stack);
+                                // We push the function context first. If the VM is not resumable, it does no harm. If it is, we then save the context here.
+                                rs.borrow_mut().call_stack.push(function_context);
+                                let nf=nested_func.clone();
+                                let f = FuncInstance::invoke_async(nested_func.clone(), args, Rc::clone(&externals))
+                                    .then(move |ret| {
+                                        let s=Rc::clone(&rs);
+                                        let return_val = match ret {
+                                            Ok(val) => val,
+                                            Err(trap) => {
+                                                if trap.kind().is_host() {
+                                                    s.borrow_mut().state = InterpreterState::Resumable(
+                                                        nf.signature().return_type(),
+                                                    );
+                                                }
+                                                return future::err(trap);
+                                            }
+                                        };
+                                        // Check if `return_val` matches the signature.
+                                        let value_ty =
+                                            return_val.as_ref().map(|val| val.value_type());
+                                        let expected_ty = nf.signature().return_type();
+                                        if value_ty != expected_ty {
+                                            return future::err(
+                                                TrapKind::UnexpectedSignature.into(),
+                                            );
+                                        }
+                                        if let Some(return_val) = return_val {
+                                            if let Err(err)=s.borrow_mut().value_stack
+                                                .push(return_val.into())
+                                                .map_err(Trap::new){
+                                                    return future::err(err)
+                                                }
+
+                                        }
+                                        future::ok(future::Loop::Continue(Rc::clone(&rs)))
+                                    });
+                                return future::Either::B(Box::new(f));
+                                // return future::Either::B(future::ok(future::Loop::Continue(Rc::clone(&rs))));
+                            } //host
+                        } //nested as internal
+                    } //nested
+                } //end of match
+                  //have to explicitly continue as we aren't a real loop
+                  // return future::ok(future::Loop::Continue(Rc::clone(&rs)));
+            }), //End of Loop
+        ) //End of Box
+    }
+
+    //Async
     #[inline(always)]
     fn run_instruction(
         &mut self,
