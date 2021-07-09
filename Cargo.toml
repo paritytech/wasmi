@@ -53,6 +53,8 @@ core = [
 # workloads.
 vec_memory = []
 
+reduced-stack-buffer = [ "parity-wasm/reduced-stack-buffer" ]
+
 [workspace]
 members = ["validation"]
 exclude = ["benches"]
